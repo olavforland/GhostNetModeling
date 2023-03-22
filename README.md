@@ -5,3 +5,6 @@ The repository consists of two main folders: `LobsterTrapModeling` and `FishingN
 
 ## Lobster Trap Modeling
 
+```conda create –name <env_name > python=3.11 
+conda activate <env_name>
+pip install -r requirements.txt```
