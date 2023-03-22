@@ -5,8 +5,10 @@ The repository consists of two main folders: `LobsterTrapModeling` and `FishingN
 
 ## Initializing environment
 
-To get started, navigate to the project folder and run
+To get started, navigate to the project folder and run the following commands. The creating and activating a conda environment is not needed, but recommended. 
 
-```conda create –name <env_name> python=3.11 
+```
+conda create –name <env_name> python=3.11 
 conda activate <env_name>
-pip install -r requirements.txt```
+pip install -r requirements.txt
+```
