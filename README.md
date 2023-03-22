@@ -21,6 +21,6 @@ For more in-depth explanation of how the classes interact, see `/LobsterTrapMode
 
 The most important classes are found in `location_model.py`:
 - `LobsterTrapLocationModel`: Wrapper class for `sklearn.mixture.GaussianMixture`. Contains a pd.DataFrame of coordinates, and handles fitting the mixture model to the data. Intended to fit data at a specific location, as it gets inaccurate when the area the points span gets to large.
-- `RegionalLobsterTrapModel`: Contains all data points for Norway, and handles clustering the data and fitting a `LobsterTrapLocationModel` to each of the clusters. 
+- `RegionalLobsterTrapModel`: Contains all data points for Norway, and handles outliers, clustering the data and fitting a `LobsterTrapLocationModel` to each of the clusters. 
 - `RegionalFoundTrapsLocationModel`: Interface for modeling the **found** lobster traps. Inherits from `RegionalLobsterTrapModel`
 - `RegionalLostTrapsLocationModel`: Interface for modeling the **lost** lobster traps. Inherits from `RegionalLobsterTrapModel`
