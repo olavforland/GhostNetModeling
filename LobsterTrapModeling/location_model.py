@@ -68,6 +68,8 @@ class LobsterTrapLocationModel():
         self.means_ = None
         self.covariances_ = None
 
+        self.ocean_fractions = {}
+
 
 
     def init_model(self,  model: str='GMM', n_components: int=50, covariance_type: str='full', max_iter: int=500, 
@@ -97,17 +99,21 @@ class LobsterTrapLocationModel():
 
         if isinstance(self.model, BayesianGaussianMixture):
             self.efficient_components = np.unique(self.predict())
+
+        _ = self.compute_ocean_fractions()
         return self
     
-    def predict(self) -> np.ndarray:
+    def predict(self, X: np.ndarray=None) -> np.ndarray:
         """Predict the labels of the fitted data.
 
         Returns:
             np.ndarray: The predicted labels.
         """
-        X = self.data[['latitude', 'longitude']]
-        self.data['label'] = self.model.predict(X)
-        return self.data['label'].values
+        if X is None:
+            X = self.data[['latitude', 'longitude']]
+            self.data['label'] = self.model.predict(X)
+            return self.data['label'].values
+        return self.model.predict(X)
     
 
     def detect_outliers_dbscan(self,  eps: float=0.5, min_samples: int=5, plot_outliers: bool=False, text: str=None, color_labels: bool=False) -> np.ndarray:
@@ -227,6 +233,18 @@ class LobsterTrapLocationModel():
         fig.update_layout(mapbox_style='open-street-map', margin={"r": 0, "t": 0, "l": 0, "b": 0}, height=1000, width=1400)
         fig.show()
 
+    def compute_ocean_fractions(self):
+        X_sample, y_sample = self.model.sample(100000)
+        ocean_fractions = {}
+        for label in np.unique(y_sample):
+            mask = y_sample == label
+            # Ocean fraction within current component
+            is_ocean = globe.is_ocean(lat=X_sample[mask, 0], lon=X_sample[mask, 1])
+            prob_ocean = is_ocean.mean()
+            ocean_fractions[label] = prob_ocean
+        self.ocean_fractions = ocean_fractions
+        return self.ocean_fractions
+            
 
     def score_samples(self, X: np.ndarray) -> np.ndarray:
         """Calculates the likelihood of belonging to the model for each point in X.
@@ -237,7 +255,30 @@ class LobsterTrapLocationModel():
         Returns:
             np.ndarray: The resulting likelihoods
         """
-        return np.exp(self.model.score_samples(X))
+        prob_density = np.exp(self.model.score_samples(X))
+        is_ocean = globe.is_ocean(lat=X[:, 0], lon=X[:, 1])
+
+        prob_density = prob_density * is_ocean
+        pred_labels = self.predict(X)
+
+        # Perform bayesian update
+        for label in np.unique(pred_labels):
+            mask = pred_labels == label
+            # Ocean fraction within current component
+            prob_density[mask] = prob_density[mask] / self.ocean_fractions[label]
+
+        # Standardize the distribution
+        return prob_density / prob_density.sum()
+    
+    def sample(self, n_samples: int):
+        n_components = len(self.model.weights_)
+        mean_ocaen_fraction = sum(self.ocean_fractions.values()) / len(self.ocean_fractions)
+        # Divice by mean ocean fraction to get roughly n_samples legal samples
+        sample, _ = self.model.sample(int(n_samples * n_components / mean_ocaen_fraction))
+
+        # Remove points on land
+        is_ocean = globe.is_ocean(lat=sample[:, 0], lon=sample[:, 1])
+        return sample[is_ocean]
     
     def dump(self, filename: str) -> None:
         """Save the model to file.
@@ -261,6 +302,7 @@ class LobsterTrapLocationModel():
         self.efficient_components = state_dict['efficient_components']
         self.means_ = state_dict['means_']
         self.covariances_ = state_dict['covariances_']
+        self.ocean_fractions = state_dict['ocean_fractions']
 
     @staticmethod
     def from_dict(state_dict):
@@ -271,6 +313,7 @@ class LobsterTrapLocationModel():
         model.efficient_components = state_dict['efficient_components']
         model.means_ = state_dict['means_']
         model.covariances_ = state_dict['covariances_']
+        model.ocean_fractions = state_dict['ocean_fractions']
         return model
 
     def state_dict(self):
@@ -280,7 +323,8 @@ class LobsterTrapLocationModel():
             'n_components': self.n_components,
             'efficient_components': self.efficient_components, 
             'means_': self.means_,
-            'covariances_': self.covariances_
+            'covariances_': self.covariances_, 
+            'ocean_fractions': self.ocean_fractions
         }
     
 
@@ -296,8 +340,17 @@ class RegionalLobsterTrapModel:
         
         clusters = KMeans(n_clusters=n_clusters, n_init='auto').fit(self.data[['latitude', 'longitude']])    
         self.labels = clusters.predict(self.data[['latitude', 'longitude']])
+        self.data['label'] = self.labels
+        self.data['label'] = self.data['label'].astype('category')
+
         if plot:
-            _ = plot_scatter(self.data, 'latitude', 'longitude', color=self.labels, labels=self.labels)
+            # fig = plot_scatter(self.data, 'latitude', 'longitude', color='label', labels=self.labels, show=False)
+            # fig.update_layout(legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01), width=700, showlegend=True)
+            # fig.show()
+            fig = px.scatter_mapbox(self.data.sort_values(by='label'), lat='latitude', lon='longitude', mapbox_style='open-street-map', color='label', labels={'label': 'Cluster'})
+            fig.update_layout(margin={"r": 0, "t": 0, "l": 0, "b": 0}, height=900, width=700, legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01), showlegend=True)
+            fig.show()
+
         return self.labels
     
     def find_best_num_clusters(self, n_clusters_space=range(6, 15), scoring='silhouette', verbose=False):
@@ -462,19 +515,21 @@ class RegionalLobsterTrapModel:
         Returns:
             np.ndarray: Binary outlier mask for the data points.
         """
-        X = self.data[['latitude', 'longitude']]
+        X = self.data[['latitude', 'longitude']].copy()
         labels = DBSCAN(eps=eps, min_samples=min_samples).fit_predict(X)
         # Outliers are detected as noise in the data, get label -1
         outlier_mask = labels == -1
         # Enter manual points
         coords = X.apply(lambda x: (np.round(x['latitude'], 6), np.round(x['longitude'], 6)), axis=1)
         outlier_mask |= coords.isin(manual_outliers)
-        color = outlier_mask if not color_labels else labels
+        X['color'] = outlier_mask if not color_labels else labels 
+        X['color'] = X['color'].replace({True: 'Outlier', False: 'Non-outlier'})
         if plot_outliers:
             if text:
                 text = self.data[text]
-            fig = px.scatter_mapbox(self.data, lat='latitude', lon='longitude', mapbox_style='open-street-map', color=color, hover_name=text)
-            fig.update_layout(margin={"r": 0, "t": 0, "l": 0, "b": 0}, height=1000, width=1400)
+            fig = px.scatter_mapbox(X, lat='latitude', lon='longitude', mapbox_style='open-street-map', color='color', hover_name=text, labels={'color': ''})
+            fig.update_layout(margin={"r": 0, "t": 0, "l": 0, "b": 0}, height=900, width=700, legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
+                              title='Outliers detected by DBSCAN', title_x=0.5)
             fig.show()
 
         return outlier_mask
@@ -547,12 +602,18 @@ class RegionalLobsterTrapModel:
     def score_samples(self, points): 
 
         scores = np.array([model.score_samples(points) for model in self.models.values()])
-        scores = scores.clip(0.001, 0.9)
-        scores = np.sum(scores, axis=0)
-        scores = scores / scores.max()
-
+        #scores = scores.clip(0.001, 0.9)
+        #scores = np.sum(scores, axis=0)
+        #scores = scores / scores.max()
+        print(scores.shape)
         #print(scores.shape)
-        return scores
+        return scores.mean(axis=0)
+    
+    def sample(self, n_samples):
+        samples = []
+        for model in self.models.values():
+            samples.append(model.sample(n_samples))
+        return np.concatenate(samples, axis=0)#np.asarray([sample[0] for model in self.models.values() for sample in model.sample(n_samples)])
 
 
 class RegionalFoundTrapsLocationModel(RegionalLobsterTrapModel):
