@@ -33,7 +33,7 @@ The most important classes are found in `./LobsterTrapModeling/location_model.py
 
 For a tutorial of how the model works, see `./FishingNetSimulation/ghostnet_modelling.ipynb`
 
-The simulation has been run in `./FishingNetSimulation/simulation.py`. This file contains the class `GhostNetSimulator`, which essentially wraps around the simulation modules in the ![https://opendrift.github.io/](OpenDrift) library. 
+The simulation has been run in `./FishingNetSimulation/simulation.py`. This file contains the class `GhostNetSimulator`, which essentially wraps around the simulation modules in the [https://opendrift.github.io/](OpenDrift) library. 
 
 
 
