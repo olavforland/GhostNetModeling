@@ -11,13 +11,23 @@ The report of the project is found as `./report.pdf`.
 
 ## Setup
 
-To get started, navigate to the project folder and run the following commands. The creating and activating of a conda environment is not needed, but recommended. 
+To get started, there are two different requirement.txt files: one for `FishingNetSimulation` and one for `LobsterTrapModeling`. Navigate to one of these folders, and run the following commands. The creating and activating of a conda environment is not needed, but recommended. 
 
 ```
 conda create –name <env_name> python=3.11 
 conda activate <env_name>
 pip install -r requirements.txt
 ```
+
+For example, if I want to test the lobster trap models (it is equivalent for the simulation): 
+
+```
+cd LobsterTrapModeling # Assuming we are in repository folder
+conda create –name trap_modeling python=3.11 
+conda activate trap_modeling
+pip install -r requirements.txt
+```
+
 
 ## Lobster trap modeling
 
