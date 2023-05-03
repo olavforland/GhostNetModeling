@@ -16,7 +16,7 @@ from global_land_mask import globe
 from helpers import compute_convex_hull, confidence_ellipse
 from plot import plot_geometry, scatter_trace, plot_scatter
 
-from typing import Tuple, List
+from typing import Tuple, List, Iterable
 
 # Some points that weren't caught by dbscan
 # These are located in places that either doesn't make sense (in the middle of the country),
@@ -40,9 +40,9 @@ FOUND_POINTS_TO_REMOVE = [
 pd.options.mode.chained_assignment = None  # default='warn'
 
 
-
 class LobsterTrapLocationModel():
-    """ Class for modelling both found and lost lobster traps. 
+    """ Class for modelling both found and lost lobster traps. Essentially a wrapper class for sklearn's GaussianMixture, which handles 
+    data processing and plotting as well
     """
     def __init__(self, data: pd.DataFrame=None, model: str='GMM', n_components: int=50, covariance_type: str='full', max_iter: int=500, 
                  weight_concentration_prior: float=None, weight_concentration_prior_type: str='dirichlet_process') -> None:
@@ -104,7 +104,10 @@ class LobsterTrapLocationModel():
         return self
     
     def predict(self, X: np.ndarray=None) -> np.ndarray:
-        """Predict the labels of the fitted data.
+        """Predict the labels X, or the fitted data if input is None.
+
+        Args:
+            X (np.ndarray, optional): Points to label. Defaults to None.
 
         Returns:
             np.ndarray: The predicted labels.
@@ -233,7 +236,12 @@ class LobsterTrapLocationModel():
         fig.update_layout(mapbox_style='open-street-map', margin={"r": 0, "t": 0, "l": 0, "b": 0}, height=1000, width=1400)
         fig.show()
 
-    def compute_ocean_fractions(self):
+    def compute_ocean_fractions(self) -> dict:
+        """Estimates ocean fraction in each component by sampling from the fitted distributions and calculating fraction that lands in ocean.
+
+        Returns:
+            dict: Dictionary from component label to ocean fraction
+        """
         X_sample, y_sample = self.model.sample(100000)
         ocean_fractions = {}
         for label in np.unique(y_sample):
@@ -270,7 +278,15 @@ class LobsterTrapLocationModel():
         # Standardize the distribution
         return prob_density / prob_density.sum()
     
-    def sample(self, n_samples: int):
+    def sample(self, n_samples: int) -> np.ndarray:
+        """Samples points from the distribution, only returning points that land in ocean
+
+        Args:
+            n_samples (int): Number of samples to draw
+
+        Returns:
+            np.ndarray: Array of latitude, longitude coordinates
+        """
         n_components = len(self.model.weights_)
         mean_ocaen_fraction = sum(self.ocean_fractions.values()) / len(self.ocean_fractions)
         # Divice by mean ocean fraction to get roughly n_samples legal samples
@@ -316,7 +332,12 @@ class LobsterTrapLocationModel():
         model.ocean_fractions = state_dict['ocean_fractions']
         return model
 
-    def state_dict(self):
+    def state_dict(self) -> dict:
+        """Generate dictionary containing state of model
+
+        Returns:
+            dict: State as a dictionary
+        """
         return {
             'model': self.model,
             'data': self.data,
@@ -329,6 +350,8 @@ class LobsterTrapLocationModel():
     
 
 class RegionalLobsterTrapModel:
+    """ Class that maintains several LobsterTrapLocationModels, one per fishing area. 
+    """
     def __init__(self, data: pd.DataFrame=None, model: str='GMM', max_iter: int=500) -> None:
         self.data = data
         self.model_type = model
@@ -337,6 +360,15 @@ class RegionalLobsterTrapModel:
         self.models = {}
 
     def cluster_data(self, n_clusters=7, plot=False) -> np.ndarray:
+        """Cluster the data in the model with KMeans
+
+        Args:
+            n_clusters (int, optional): Number of clusters. Defaults to 7.
+            plot (bool, optional): Whether to plot the resulting clusters. Defaults to False.
+
+        Returns:
+            np.ndarray: Label of cluster each data point belongs to
+        """
         
         clusters = KMeans(n_clusters=n_clusters, n_init='auto').fit(self.data[['latitude', 'longitude']])    
         self.labels = clusters.predict(self.data[['latitude', 'longitude']])
@@ -353,7 +385,20 @@ class RegionalLobsterTrapModel:
 
         return self.labels
     
-    def find_best_num_clusters(self, n_clusters_space=range(6, 15), scoring='silhouette', verbose=False):
+    def find_best_num_clusters(self, n_clusters_space: Iterable=range(6, 15), scoring: str='silhouette', verbose: bool=False) -> Tuple[dict, dict]:
+        """Finds the best number of clusters by maximizing the scoring over the provided cluster space. 
+        For each number of clusters in n_clusters_space the mean of scoring is taken over the Gaussian Mixture Model fitted in each cluster.
+        Within each cluster a independant Gaussian Mixture model is fitted. The best number of components is decided based on scoring. 
+
+
+        Args:
+            n_clusters_space (Iterable, optional): Different number of clusters to try. Defaults to range(6, 15).
+            scoring (str, optional): Scoring function used to determine best number of clusters. Defaults to 'silhouette'.
+            verbose (bool, optional): Verbose information. Defaults to False.
+
+        Returns:
+            Tuple[dict, dict]: Tuple of mean scoring for each number in n_clusters_space, and best number of components in each cluster for each number in n_cluster_space
+        """
         # Dictionary from n_clusters to mean score of every fitted model through every cluster
         n_clusters_mean_scores = {}
         # Dictionary from n_clusters to a dictionary containing number of Gaussian components within each cluster
@@ -415,7 +460,18 @@ class RegionalLobsterTrapModel:
         return n_clusters_mean_scores, n_clusters_to_components_within_clusters
     
 
-    def fit_trap_models(self, labels_2_n_components, scoring='silhouette', verbose=False):
+    def fit_trap_models(self, labels_2_n_components: dict, scoring: str='silhouette', verbose: bool=False) ->dict:
+        """Fits a LobsterTrapLocationModel for each cluster provided in labels_2_n_compoenents. 
+        Due to the variance in Gaussian Mixture Models, we fit 5 times and pick the best based on scoring.
+
+        Args:
+            labels_2_n_components (dict): Cluster label to number of components in the Gaussian Mixture Model
+            scoring (str, optional): Scoring to determine best fit. Defaults to 'silhouette'.
+            verbose (bool, optional): Verbose information. Defaults to False.
+
+        Returns:
+            dict: Dict of cluster label to fitted model
+        """
         models = {} # label to LobsterTrapLocationModel
         for label in np.unique(self.labels):
             best_components_silhouette = (-1, -1) # (n_components, silhouette)
@@ -446,7 +502,12 @@ class RegionalLobsterTrapModel:
         return models
     
 
-    def plot(self, conf_level=0.95):
+    def plot(self, conf_level: float=0.95) -> None:
+        """Helper for plotting the fitted Gaussian Mixture Models, with confidence ellipsis
+
+        Args:
+            conf_level (float, optional): Confidence level for confidence ellipsis. Defaults to 0.95.
+        """
         fig = go.Figure()
 
         colors = sample_colorscale('rainbow', max(len(np.unique(self.labels)), 2))
@@ -478,12 +539,28 @@ class RegionalLobsterTrapModel:
 
 
 
-    def silhouette_score(self):
+    def silhouette_score(self) -> float:
+        """Calculates the mean silhouette score over the model in each cluster
+
+        Returns:
+            float: Mean silhouette score
+        """
         return np.mean([model.silhouette_score() for model in self.models.values()])
 
 
 
-    def change_cluster_components(self, cluster_num, new_components, plot=True):
+    def change_cluster_components(self, cluster_num: int, new_components: int, plot: bool=True) -> 'RegionalFoundTrapsLocationModel':
+        """Manually change the number of components in a specific cluster
+
+        Args:
+            cluster_num (int): The label of the cluster to change
+            new_components (int): Number of new components to fit
+            plot (bool, optional): Whether to plot the result. Defaults to True.
+
+        Returns:
+            RegionalFoundTrapsLocationModel: The model with the changed number of components
+        """
+
         best_components_silhouette = (-1, -1)
         for _ in range(5):
 
@@ -500,7 +577,7 @@ class RegionalLobsterTrapModel:
         self.models[cluster_num] = best_model
         if plot:
             self.plot()
-        return best_model
+        return self
     
 
     def detect_outliers_dbscan(self,  eps: float=0.5, min_samples: int=5, plot_outliers: bool=False, text: str=None, color_labels: bool=False, manual_outliers=None) -> np.ndarray:
@@ -599,17 +676,28 @@ class RegionalLobsterTrapModel:
         self.model_type = state_dict['model_type']
         
     
-    def score_samples(self, points): 
+    def score_samples(self, points: np.ndarray) -> np.ndarray:
+        """Score the likelihood of the provided points belonging to the model.
+
+        Args:
+            points (np.ndarray): Points to score (latitude, longitude)
+
+        Returns:
+            np.ndarray: Score for each point
+        """
 
         scores = np.array([model.score_samples(points) for model in self.models.values()])
-        #scores = scores.clip(0.001, 0.9)
-        #scores = np.sum(scores, axis=0)
-        #scores = scores / scores.max()
-        print(scores.shape)
-        #print(scores.shape)
         return scores.mean(axis=0)
     
-    def sample(self, n_samples):
+    def sample(self, n_samples: int) -> np.ndarray:
+        """Sample points from entire model
+
+        Args:
+            n_samples (int): Num to sample
+
+        Returns:
+            np.ndarray: Sampled points
+        """
         samples = []
         for model in self.models.values():
             samples.append(model.sample(n_samples))
@@ -617,7 +705,7 @@ class RegionalLobsterTrapModel:
 
 
 class RegionalFoundTrapsLocationModel(RegionalLobsterTrapModel):
-
+    # Just specific default args for found traps
     def detect_outliers_dbscan(self,  eps: float=0.5, min_samples: int=8, plot_outliers: bool=False, text: str=None, color_labels: bool=False, manual_outliers=FOUND_POINTS_TO_REMOVE) -> np.ndarray:
         return super().detect_outliers_dbscan(eps, min_samples, plot_outliers, text, color_labels, manual_outliers=manual_outliers)
     
